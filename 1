@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>東京 V16 - 自動預算與實時導航</title>
+    <style>
+        :root { --primary: #d32f2f; --sub: #1d3557; --bg: #f4f7f9; --google-blue: #4285F4; }
+        body { font-family: -apple-system, sans-serif; background: var(--bg); margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+        
+        .header { background: var(--sub); color: white; padding: 10px; text-align: center; flex-shrink: 0; }
+        .main-container { display: flex; flex: 1; overflow: hidden; }
+        
+        /* 左側：行程時間軸 */
+        .itinerary-section { flex: 6; overflow-y: auto; padding: 10px; border-right: 2px solid #ddd; }
+        .day-card { background: white; margin-bottom: 20px; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
+        .day-title { background: var(--primary); color: white; padding: 10px; font-weight: bold; position: sticky; top: 0; z-index: 10; }
+        
+        .slot { margin-left: 20px; border-left: 2px solid #eee; padding: 0 0 20px 20px; position: relative; }
+        .time-tag { background: #eee; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: bold; position: absolute; left: -55px; width: 40px; text-align: center; }
+        .place-input { width: 95%; font-weight: bold; border: 1px solid #ccc; padding: 8px; border-radius: 4px; background: #fffdf0; }
+        
+        /* 數據與按鈕 */
+        .data-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin: 10px 0; }
+        .data-box { border: 1px solid #eee; border-radius: 4px; padding: 4px; text-align: center; font-size: 9px; }
+        .data-box input { width: 100%; border: none; text-align: center; font-weight: bold; font-size: 13px; color: var(--primary); background: transparent; }
+        
+        .btn-row { display: flex; gap: 5px; }
+        .btn { flex: 1; padding: 10px; border: none; border-radius: 4px; font-size: 12px; font-weight: bold; cursor: pointer; color: white; }
+        .btn-auto { background: #ff9800; }
+        .btn-nav { background: var(--google-blue); }
+
+        /* 右側：Google 地圖區 */
+        .map-section { flex: 4; display: flex; flex-direction: column; background: #fff; }
+        .map-header { padding: 15px; background: #f8f9fa; border-bottom: 1px solid #ddd; }
+        .map-iframe { flex: 1; border: none; width: 100%; }
+        .nav-link-box { padding: 15px; background: #e8f0fe; text-align: center; border-top: 1px solid #ddd; }
+        .nav-link-box a { color: var(--google-blue); font-weight: bold; text-decoration: none; font-size: 14px; }
+
+        .footer { background: white; padding: 15px; border-top: 1px solid #ddd; text-align: center; }
+        .save-btn { background: #28a745; color: white; border: none; padding: 12px 60px; border-radius: 25px; font-weight: bold; cursor: pointer; font-size: 16px; }
+    </style>
+</head>
+<body>
+
+<div class="header"><strong>TOKYO TRAVEL V16</strong> | 自動預算 + 實時導航系統</div>
+
+<div class="main-container">
+    <div class="itinerary-section" id="itin-list"></div>
+
+    <div class="map-section">
+        <div class="map-header">
+            <h4 style="margin:0; color:var(--google-blue);">🗺️ Google Maps 預覽</h4>
+            <small id="current-dest-text">請點擊左側「實時導航」</small>
+        </div>
+        <iframe id="map-frame" class="map-iframe" src="https://www.google.com/search?q=Tokyo+Tourist+Spots&igu=1"></iframe>
+        <div class="nav-link-box">
+            <a id="external-nav-link" href="#" target="_blank">🔗 點此開啟完整 Google Maps 導航路線</a>
+        </div>
+    </div>
+</div>
+
+<div class="footer"><button class="save-btn" onclick="saveData()">💾 儲存所有校對數據</button></div>
+
+<script>
+    const HOTEL = "Asakusa View Hotel Annex Rokku";
+    
+    // 預設預算數據庫
+    const TRAFFIC_DB = [
+        { key: "機場", sf: 1310, st: 65, wt: 15, tf: 28000, tt: 75 },
+        { key: "迪士尼", sf: 850, st: 55, wt: 12, tf: 9000, tt: 45 },
+        { key: "新宿", sf: 350, st: 40, wt: 10, tf: 7000, tt: 35 },
+        { key: "澀谷", sf: 350, st: 45, wt: 12, tf: 7500, tt: 40 },
+        { key: "上野", sf: 180, st: 15, wt: 10, tf: 1800, tt: 12 },
+        { key: "銀座", sf: 210, st: 20, wt: 8, tf: 3500, tt: 18 },
+        { key: "淺草", sf: 0, st: 0, wt: 9, tf: 600, tt: 5 },
+        { key: "晴空塔", sf: 180, st: 10, wt: 15, tf: 1400, tt: 10 }
+    ];
+
+    function getSlotHTML(time = "09:00") {
+        return `
+        <div class="slot">
+            <div class="time-tag">${time}</div>
+            <input type="text" class="place-input" value="${HOTEL} -> " placeholder="請輸入目的地">
+            <div class="data-grid">
+                <div class="data-box"><label>🚇(円)</label><input type="number" class="s-f"></div>
+                <div class="data-box"><label>⏱️地鐵(分)</label><input type="number" class="s-t" onchange="recalcAll()"></div>
+                <div class="data-box" style="background:#fff9c4;"><label>🚶步行(分)</label><input type="number" class="w-t" onchange="recalcAll()"></div>
+                <div class="data-box"><label>🚕(円)</label><input type="number" class="t-f"></div>
+                <div class="data-box"><label>⏱️的士(分)</label><input type="number" class="t-t"></div>
+                <div class="data-box" style="background:#e8f5e9;"><label>🕒停留(分)</label><input type="number" class="stay-t" value="60" onchange="recalcAll()"></div>
+            </div>
+            <div class="btn-row">
+                <button class="btn btn-auto" onclick="autoCal(this)">🚀 自動計算錢與時間</button>
+                <button class="btn btn-nav" onclick="showNav(this)">🗺️ 實時導航 (查看地圖)</button>
+            </div>
+        </div>`;
+    }
+
+    // 按鈕功能 1：自動計算
+    window.autoCal = function(btn) {
+        const slot = btn.closest('.slot');
+        const text = slot.querySelector('.place-input').value;
+        let found = TRAFFIC_DB.find(item => text.includes(item.key));
+        
+        if (found) {
+            slot.querySelector('.s-f').value = found.sf;
+            slot.querySelector('.s-t').value = found.st;
+            slot.querySelector('.w-t').value = found.wt;
+            slot.querySelector('.t-f').value = found.tf;
+            slot.querySelector('.t-t').value = found.tt;
+        } else {
+            slot.querySelector('.s-f').value = 250;
+            slot.querySelector('.s-t').value = 35;
+            slot.querySelector('.w-t').value = 10;
+        }
+        recalcAll();
+        btn.innerText = "✅ 已更新數據";
+        setTimeout(() => btn.innerText = "🚀 自動計算錢與時間", 1500);
+    }
+
+    // 按鈕功能 2：實時導航
+    window.showNav = function(btn) {
+        const val = btn.closest('.slot').querySelector('.place-input').value;
+        const dest = val.split("->")[1] ? val.split("->")[1].trim() : val;
+        
+        document.getElementById('current-dest-text').innerText = "目的地：" + dest;
+        // 更新右側預覽
+        document.getElementById('map-frame').src = `https://www.google.com/search?q=${encodeURIComponent(dest + " Tokyo Address")}&igu=1`;
+        // 更新實時導航連結
+        const navUrl = `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(HOTEL)}&destination=${encodeURIComponent(dest)}&travelmode=transit`;
+        document.getElementById('external-nav-link').href = navUrl;
+    }
+
+    // 時間軸重新計算
+    window.recalcAll = function() {
+        document.querySelectorAll('.day-card').forEach(card => {
+            let baseTime = new Date();
+            baseTime.setHours(9, 0, 0);
+            card.querySelectorAll('.slot').forEach(slot => {
+                slot.querySelector('.time-tag').innerText = baseTime.getHours().toString().padStart(2, '0') + ":" + baseTime.getMinutes().toString().padStart(2, '0');
+                let dur = (parseInt(slot.querySelector('.s-t').value) || 0) + (parseInt(slot.querySelector('.w-t').value) || 0) + (parseInt(slot.querySelector('.stay-t').value) || 0);
+                baseTime.setMinutes(baseTime.getMinutes() + dur);
+            });
+        });
+    }
+
+    window.onload = () => {
+        const saved = localStorage.getItem('tokyo_v16_data');
+        if (saved) document.getElementById('itin-list').innerHTML = saved;
+        else {
+            for(let i=1; i<=6; i++) {
+                document.getElementById('itin-list').insertAdjacentHTML('beforeend', `
+                    <div class="day-card">
+                        <div class="day-title">1月${17+i}日 (Day ${i})</div>
+                        <div class="timeline" id="day-${i}-tl">${getSlotHTML()}</div>
+                        <button style="width:100%; border:none; background:#eee; padding:10px;" onclick="addSlot(${i})">+ 增加時間軸行程</button>
+                    </div>
+                `);
+            }
+        }
+    };
+
+    window.addSlot = (i) => {
+        document.getElementById(`day-${i}-tl`).insertAdjacentHTML('beforeend', getSlotHTML());
+        recalcAll();
+    };
+
+    window.saveData = () => {
+        document.querySelectorAll('input').forEach(i => i.setAttribute('value', i.value));
+        localStorage.setItem('tokyo_v16_data', document.getElementById('itin-list').innerHTML);
+        alert("存檔成功！");
+    };
+</script>
+</body>
+</html>
